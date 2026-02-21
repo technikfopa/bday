@@ -18,12 +18,19 @@ interface Message {
 
 // Vercel načte proměnnou REDIS_URL, kterou jsme nastavili
 // "family: 6" je hack, který někdy na Vercelu pomáhá s připojením, ale zkusíme to bez něj nebo s ním.
+// Načtení URL
 const connectionString = process.env.REDIS_URL
+
 if (!connectionString) {
-  throw new Error('Chybí environment variable REDIS_URL')
+  throw new Error('REDIS_URL není nastavena!')
 }
 
-const redis = new Redis(connectionString)
+// ÚPRAVA ZDE: Přidáme konfigurační objekt jako druhý parametr
+const redis = new Redis(connectionString, {
+  family: 4,           // DŮLEŽITÉ: Vynutí IPv4 (to vyřeší to nekonečné načítání)
+  connectTimeout: 5000, // Pokud se nepřipojí do 5s, vyhodí chybu (místo nekonečna)
+  maxRetriesPerRequest: 1
+})
 
 const app = new Hono().basePath('/api')
 
