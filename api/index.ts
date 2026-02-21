@@ -51,6 +51,10 @@ app.get('/messages', async (c) => {
   }
 })
 
+app.get('/test', (c) => {
+  return c.text('Funguju!')
+})
+
 // POST /api/messages
 app.post('/messages', async (c) => {
   try {
