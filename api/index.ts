@@ -31,7 +31,7 @@ const DB_KEY = 'birthday_messages'
 
 const app = express();
 app.use(cors({
-  origin: ['https://stepamanarozky.vercel.app/', 'http://localhost:3000'],
+  origin: ['https://stepamanarozky.vercel.app', 'http://localhost:3000'],
   credentials: true
 }));
 app.use(express.json());
