@@ -29,6 +29,15 @@ interface Message {
 const DB_KEY = 'birthday_messages'
 
 const app = express();
+app.use(express.json());
+
+// Strip /api prefix if it exists (for Vercel)
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api')) {
+    req.url = req.path.slice(4) || '/';
+  }
+  next();
+});
 
 app.get('/health', (req, res) => {
   return res.json({ status: 'ok', time: new Date().toISOString() })
@@ -48,7 +57,7 @@ app.get('/messages', async (req, res) => {
 
 app.post('/messages', async (req, res) => {
   try {
-    const newMessage = await req.json<Message>()
+    const newMessage = req.body as Message
 
     if (!newMessage.name || !newMessage.message) {
       return res.status(400).json({ error: 'Chybí data' })
