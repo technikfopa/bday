@@ -1,11 +1,38 @@
 import { Hono } from 'hono'
 import { handle } from 'hono/vercel'
 import { cors } from 'hono/cors'
-import Redis from 'ioredis' // Používáme standardní Redis klient
+import Redis from 'ioredis'
 
-// ─── Typy ────────────────────────────────────────────────────────────────────
+// ─── 1. Inicializace Redisu ──────────────────────────────────────────────────
+
+const connectionString = process.env.REDIS_URL
+
+if (!connectionString) {
+  throw new Error('CHYBA: Není nastavena REDIS_URL v env variables!')
+}
+
+// Inicializace klienta mimo handler (aby se připojil jen jednou)
+const redis = new Redis(connectionString, {
+  family: 4,             // Vynutí IPv4 (řeší timeouty na Vercelu)
+  connectTimeout: 10000, // Timeout 10s
+  maxRetriesPerRequest: 1,
+  // DŮLEŽITÉ: Toto říká ioredisu, aby nedržel proces naživu, pokud není aktivní
+  enableOfflineQueue: false, 
+})
+
+// Rychlý test spojení do logu (uvidíš ve Vercel Logs)
+redis.on('connect', () => console.log('Redis připojen!'))
+redis.on('error', (err) => console.error('Chyba Redisu:', err))
+
+// ─── 2. Hono Aplikace ────────────────────────────────────────────────────────
+
+const app = new Hono().basePath('/api')
+
+// Povolit CORS pro všechny
+app.use('/*', cors())
+
+// Typy
 type MessageColor = 'pink' | 'rose' | 'fuchsia' | 'purple' | 'gold'
-
 interface Message {
   id: string
   name: string
@@ -14,85 +41,52 @@ interface Message {
   timestamp: number
 }
 
-// ─── Připojení k databázi ────────────────────────────────────────────────────
-
-// Vercel načte proměnnou REDIS_URL, kterou jsme nastavili
-// "family: 6" je hack, který někdy na Vercelu pomáhá s připojením, ale zkusíme to bez něj nebo s ním.
-// Načtení URL
-const connectionString = process.env.REDIS_URL
-
-if (!connectionString) {
-  throw new Error('REDIS_URL není nastavena!')
-}
-
-// ÚPRAVA ZDE: Přidáme konfigurační objekt jako druhý parametr
-const redis = new Redis(connectionString, {
-  family: 4,           // DŮLEŽITÉ: Vynutí IPv4 (to vyřeší to nekonečné načítání)
-  connectTimeout: 5000, // Pokud se nepřipojí do 5s, vyhodí chybu (místo nekonečna)
-  maxRetriesPerRequest: 1
-})
-
-const app = new Hono().basePath('/api')
-
-// ─── Middleware ──────────────────────────────────────────────────────────────
-app.use('/*', cors())
-
 const DB_KEY = 'birthday_messages'
 
-// ─── API Endpointy ───────────────────────────────────────────────────────────
+// ─── 3. Endpointy ────────────────────────────────────────────────────────────
 
-// GET /api/messages
+// Jednoduchý testovací endpoint - pokud funguje tento, Hono běží správně
+app.get('/health', (c) => {
+  return c.json({ status: 'ok', time: new Date().toISOString() })
+})
+
 app.get('/messages', async (c) => {
   try {
-    // Standardní Redis vrací string (text), musíme ho převést na JSON
     const rawData = await redis.get(DB_KEY)
-    
-    // Pokud je databáze prázdná (null), vrátíme prázdné pole []
     const messages: Message[] = rawData ? JSON.parse(rawData) : []
-    
     const sorted = messages.sort((a, b) => b.timestamp - a.timestamp)
     return c.json(sorted)
   } catch (error) {
-    console.error('Chyba Redis:', error)
+    console.error('Chyba GET /messages:', error)
     return c.json({ error: 'Chyba databáze' }, 500)
   }
 })
 
-app.get('/test', (c) => {
-  return c.text('Funguju!')
-})
-
-// POST /api/messages
 app.post('/messages', async (c) => {
   try {
     const newMessage = await c.req.json<Message>()
 
     if (!newMessage.name || !newMessage.message) {
-      return c.json({ error: 'Chybí jméno nebo zpráva' }, 400)
+      return c.json({ error: 'Chybí data' }, 400)
     }
 
-    // 1. Načíst string z Redisu
     const rawData = await redis.get(DB_KEY)
-    // 2. Převést na pole (nebo vytvořit nové, pokud nic není)
     const messages: Message[] = rawData ? JSON.parse(rawData) : []
     
-    // 3. Přidat novou zprávu
     messages.push(newMessage)
     
-    // 4. Uložit zpět jako string (Redis neumí JSON objekt)
+    // Uložíme jako string
     await redis.set(DB_KEY, JSON.stringify(messages))
 
     return c.json(newMessage, 201)
   } catch (error) {
-    console.error('Chyba Redis:', error)
+    console.error('Chyba POST /messages:', error)
     return c.json({ error: 'Nepodařilo se uložit' }, 500)
   }
 })
 
-// DELETE /api/messages/:id
 app.delete('/messages/:id', async (c) => {
   const id = c.req.param('id')
-  
   const rawData = await redis.get(DB_KEY)
   if (!rawData) return c.json({ success: true })
 
@@ -100,8 +94,10 @@ app.delete('/messages/:id', async (c) => {
   const newMessages = messages.filter((m) => m.id !== id)
   
   await redis.set(DB_KEY, JSON.stringify(newMessages))
-
   return c.json({ success: true })
 })
 
+// ─── 4. Export pro Vercel (TOHLE JE KRITICKÉ) ────────────────────────────────
+
+// ŽÁDNÉ `serve(...)` nebo `app.listen(...)` zde nesmí být!
 export default handle(app)
