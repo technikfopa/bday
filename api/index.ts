@@ -82,3 +82,4 @@ app.delete('/messages/:id', async (req, res) => {
 })
 
 export default app;
+export const handler = app;
