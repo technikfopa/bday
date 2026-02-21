@@ -1,5 +1,6 @@
 import Redis from 'ioredis'
 import express from 'express';
+import cors from 'cors';
 
 const connectionString = process.env.REDIS_URL
 
@@ -29,6 +30,10 @@ interface Message {
 const DB_KEY = 'birthday_messages'
 
 const app = express();
+app.use(cors({
+  origin: ['https://stepamanarozky.vercel.app/', 'http://localhost:3000'],
+  credentials: true
+}));
 app.use(express.json());
 
 // Strip /api prefix if it exists (for Vercel)
