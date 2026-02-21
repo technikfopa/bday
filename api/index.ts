@@ -1,9 +1,9 @@
 import { Hono } from 'hono'
 import { handle } from 'hono/vercel'
 import { cors } from 'hono/cors'
-import { kv } from '@vercel/kv'
+import Redis from 'ioredis' // Používáme standardní Redis klient
 
-// ─── Typy (zkopírované z frontendu pro jistotu) ──────────────────────────────
+// ─── Typy ────────────────────────────────────────────────────────────────────
 type MessageColor = 'pink' | 'rose' | 'fuchsia' | 'purple' | 'gold'
 
 interface Message {
@@ -14,64 +14,83 @@ interface Message {
   timestamp: number
 }
 
-// ─── Nastavení aplikace ──────────────────────────────────────────────────────
+// ─── Připojení k databázi ────────────────────────────────────────────────────
+
+// Vercel načte proměnnou REDIS_URL, kterou jsme nastavili
+// "family: 6" je hack, který někdy na Vercelu pomáhá s připojením, ale zkusíme to bez něj nebo s ním.
+const connectionString = process.env.REDIS_URL
+if (!connectionString) {
+  throw new Error('Chybí environment variable REDIS_URL')
+}
+
+const redis = new Redis(connectionString)
 
 const app = new Hono().basePath('/api')
 
-// Povolit CORS (aby frontend mohl mluvit s backendem)
+// ─── Middleware ──────────────────────────────────────────────────────────────
 app.use('/*', cors())
 
-const DB_KEY = 'birthday_messages_v1'
+const DB_KEY = 'birthday_messages'
 
 // ─── API Endpointy ───────────────────────────────────────────────────────────
 
-// 1. Získat všechny zprávy
+// GET /api/messages
 app.get('/messages', async (c) => {
   try {
-    // Stáhneme data z Vercel KV databáze
-    const messages = await kv.get<Message[]>(DB_KEY) || []
+    // Standardní Redis vrací string (text), musíme ho převést na JSON
+    const rawData = await redis.get(DB_KEY)
     
-    // Seřadíme od nejnovější
+    // Pokud je databáze prázdná (null), vrátíme prázdné pole []
+    const messages: Message[] = rawData ? JSON.parse(rawData) : []
+    
     const sorted = messages.sort((a, b) => b.timestamp - a.timestamp)
     return c.json(sorted)
   } catch (error) {
+    console.error('Chyba Redis:', error)
     return c.json({ error: 'Chyba databáze' }, 500)
   }
 })
 
-// 2. Odeslat novou zprávu
+// POST /api/messages
 app.post('/messages', async (c) => {
   try {
     const newMessage = await c.req.json<Message>()
 
-    // Validace
     if (!newMessage.name || !newMessage.message) {
-      return c.json({ error: 'Chybí jméno nebo text' }, 400)
+      return c.json({ error: 'Chybí jméno nebo zpráva' }, 400)
     }
 
-    // Atomická operace: Načíst -> Přidat -> Uložit
-    const messages = await kv.get<Message[]>(DB_KEY) || []
+    // 1. Načíst string z Redisu
+    const rawData = await redis.get(DB_KEY)
+    // 2. Převést na pole (nebo vytvořit nové, pokud nic není)
+    const messages: Message[] = rawData ? JSON.parse(rawData) : []
+    
+    // 3. Přidat novou zprávu
     messages.push(newMessage)
-    await kv.set(DB_KEY, messages)
+    
+    // 4. Uložit zpět jako string (Redis neumí JSON objekt)
+    await redis.set(DB_KEY, JSON.stringify(messages))
 
     return c.json(newMessage, 201)
   } catch (error) {
-    console.error(error)
+    console.error('Chyba Redis:', error)
     return c.json({ error: 'Nepodařilo se uložit' }, 500)
   }
 })
 
-// 3. Smazat zprávu (podle ID)
+// DELETE /api/messages/:id
 app.delete('/messages/:id', async (c) => {
   const id = c.req.param('id')
   
-  const messages = await kv.get<Message[]>(DB_KEY) || []
-  const filtered = messages.filter((m) => m.id !== id)
+  const rawData = await redis.get(DB_KEY)
+  if (!rawData) return c.json({ success: true })
+
+  const messages: Message[] = JSON.parse(rawData)
+  const newMessages = messages.filter((m) => m.id !== id)
   
-  await kv.set(DB_KEY, filtered)
-  
+  await redis.set(DB_KEY, JSON.stringify(newMessages))
+
   return c.json({ success: true })
 })
 
-// Důležité: Export pro Vercel
 export default handle(app)
